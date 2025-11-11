@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gantt Web Avanzado con Ruta Crítica</title>
+<style>
+body { font-family: Arial, sans-serif; margin:0; padding:20px; background:#f7f7f7; }
+h2 { margin-top:0; }
+input, textarea, select, button { padding:8px; border-radius:8px; border:1px solid #ccc; margin-bottom:10px; }
+button { background:#4caf50; color:white; cursor:pointer; border:none; }
+button:hover { background:#45a049; }
+table { width:100%; border-collapse: collapse; margin-top:20px; background:#fff; }
+th, td { border:1px solid #ccc; padding:5px; text-align:center; min-width:60px; }
+.gantt-cell { background:#4caf50; color:white; }
+.critical-cell { background:#e53935; color:white; } 
+.file-list { margin-top:5px; }
+.file-item { display:flex; justify-content:space-between; background:#eee; padding:5px 10px; border-radius:5px; margin-bottom:3px; }
+</style>
+</head>
+<body>
+
+<!-- POP-UP INICIAL -->
+<div id="popup" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; justify-content:center; align-items:center;">
+  <div style="background:#fff; padding:20px; border-radius:10px; width:350px; text-align:center;">
+    <h2>Configuración inicial</h2>
+    <label>Fecha inicio de obra:</label>
+    <input type="date" id="obraInicioPopup"><br>
+    <label>Fecha fin de obra:</label>
+    <input type="date" id="obraFinPopup"><br>
+    <label>Escala de tiempo:</label>
+    <select id="timeRangePopup">
+      <option value="día">Por día</option>
+      <option value="semana">Por semana</option>
+      <option value="mes">Por mes</option>
+      <option value="año">Por año</option>
+    </select><br>
+    <button id="startBtnPopup">Iniciar</button>
+  </div>
+</div>
+
+<div id="formContainer" style="display:none; margin-top:20px;">
+  <h2>Agregar actividad</h2>
+  <input type="text" id="actividad" placeholder="Nombre de la actividad"><br>
+  <label>Fecha inicio exacta:</label>
+  <input type="date" id="fechaInicio"><br>
+  <label>Fecha fin exacta:</label>
+  <input type="date" id="fechaFin"><br>
+  <label>Inicio en unidad:</label>
+  <input type="number" id="inicioUnidad" min="1" placeholder="Ej: 3"><br>
+  <label>Duración:</label>
+  <input type="number" id="duracionUnidad" min="1" placeholder="Ej: 4"><br>
+  <label>Dependencias (nombres separados por coma):</label>
+  <input type="text" id="dependencias" placeholder="Ej: Actividad1,Actividad2"><br>
+  <textarea id="comentarios" placeholder="Comentarios"></textarea><br>
+  <label>Archivos:</label>
+  <input type="file" id="archivos" multiple>
+  <div class="file-list" id="fileList"></div>
+  <button id="addActivity">Agregar actividad</button>
+  <button id="generateGantt">Generar Gantt y Ruta Crítica</button>
+  <button id="exportExcel">Exportar a Excel</button>
+
+  <h3>Tabla de Actividades</h3>
+  <table id="activityTable">
+    <thead>
+      <tr><th>Actividad</th><th>Inicio</th><th>Fin</th><th>Dependencias</th><th>Comentarios</th><th>Archivos</th><th>Eliminar</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h3>Gantt</h3>
+  <table id="ganttTable"></table>
+
+  <h3>Gráfico de Duración</h3>
+  <canvas id="chartDuracion" style="max-width:100%; height:300px;"></canvas>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+let activities=[], filesArray=[], obraInicio, obraFin, timeScale;
+const popup=document.getElementById('popup');
+const startBtnPopup=document.getElementById('startBtnPopup');
+const formContainer=document.getElementById('formContainer');
+const archivosInput=document.getElementById('archivos');
+const fileList=document.getElementById('fileList');
+const addActivityBtn=document.getElementById('addActivity');
+const activityTable=document.getElementById('activityTable').querySelector('tbody');
+const generateGanttBtn=document.getElementById('generateGantt');
+const exportBtn=document.getElementById('exportExcel');
+const ganttTable=document.getElementById('ganttTable');
+const chartDuracion=document.getElementById('chartDuracion');
+
+startBtnPopup.addEventListener('click',()=>{
+  obraInicio=document.getElementById('obraInicioPopup').value;
+  obraFin=document.getElementById('obraFinPopup').value;
+  timeScale=document.getElementById('timeRangePopup').value;
+  if(!obraInicio||!obraFin||obraFin<obraInicio){alert("Fechas inválidas"); return;}
+  popup.style.display='none';
+  formContainer.style.display='block';
+});
+
+// Archivos
+archivosInput.addEventListener('change', e=>{
+  for(const f of e.target.files){ filesArray.push(f);}
+  renderFiles();
+  archivosInput.value='';
+});
+function renderFiles(){
+  fileList.innerHTML='';
+  filesArray.forEach((file, idx)=>{
+    const div=document.createElement('div');
+    div.className='file-item';
+    div.innerHTML=`<span>${file.name}</span><button onclick="removeFile(${idx})">X</button>`;
+    fileList.appendChild(div);
+  });
+}
+window.removeFile=function(idx){ filesArray.splice(idx,1); renderFiles(); }
+
+// Agregar actividad
+addActivityBtn.addEventListener('click',()=>{
+  const act=document.getElementById('actividad').value.trim();
+  const fi=document.getElementById('fechaInicio').value;
+  const ff=document.getElementById('fechaFin').value;
+  const iu=document.getElementById('inicioUnidad').value;
+  const du=document.getElementById('duracionUnidad').value;
+  const deps=document.getElementById('dependencias').value.trim();
+  const cm=document.getElementById('comentarios').value.trim();
+  if(!act){alert("Ingresa actividad"); return;}
+  let startDate=fi?new Date(fi):null;
+  let endDate=ff?new Date(ff):null;
+  const obraStart=new Date(obraInicio);
+  if(!startDate && iu && du){
+    switch(timeScale){
+      case 'día': startDate=new Date(obraStart.getTime()+(iu-1)*24*60*60*1000); break;
+      case 'semana': startDate=new Date(obraStart.getTime()+(iu-1)*7*24*60*60*1000); break;
+      case 'mes': startDate=new Date(obraStart); startDate.setMonth(startDate.getMonth()+(iu-1)); break;
+      case 'año': startDate=new Date(obraStart); startDate.setFullYear(obraStart.getFullYear()+(iu-1)); break;
+    }
+    switch(timeScale){
+      case 'día': endDate=new Date(startDate.getTime()+(du-1)*24*60*60*1000); break;
+      case 'semana': endDate=new Date(startDate.getTime()+(du-1)*7*24*60*60*1000); break;
+      case 'mes': endDate=new Date(startDate); endDate.setMonth(startDate.getMonth()+(du-1)); break;
+      case 'año': endDate=new Date(startDate); endDate.setFullYear(startDate.getFullYear()+(du-1)); break;
+    }
+  }
+  if(!startDate||!endDate){alert("Debes poner fecha exacta o inicio+duración"); return;}
+  const fInicioStr=startDate.toISOString().split('T')[0];
+  const fFinStr=endDate.toISOString().split('T')[0];
+  const archivos=filesArray.map(f=>f.name).join(', ');
+  const dependencias=deps.split(',').map(d=>d.trim()).filter(d=>d);
+  activities.push({actividad:act, fechaInicio:fInicioStr, fechaFin:fFinStr, comentarios:cm, archivos, dependencias});
+  renderActivityTable();
+  document.getElementById('actividad').value='';
+  document.getElementById('fechaInicio').value='';
+  document.getElementById('fechaFin').value='';
+  document.getElementById('inicioUnidad').value='';
+  document.getElementById('duracionUnidad').value='';
+  document.getElementById('dependencias').value='';
+  document.getElementById('comentarios').value='';
+  filesArray=[];
+  renderFiles();
+});
+
+function renderActivityTable(){
+  activityTable.innerHTML='';
+  activities.forEach((act,idx)=>{
+    const row=document.createElement('tr');
+    row.innerHTML=`<td>${act.actividad}</td>
+      <td><input type="date" value="${act.fechaInicio}" onchange="updateActivity(${idx},'fechaInicio',this.value)"></td>
+      <td><input type="date" value="${act.fechaFin}" onchange="updateActivity(${idx},'fechaFin',this.value)"></td>
+      <td>${act.dependencias.join(', ')}</td>
+      <td>${act.comentarios}</td>
+      <td>${act.archivos}</td>
+      <td><button onclick="deleteActivity(${idx})">Eliminar</button></td>`;
+    activityTable.appendChild(row);
+  });
+}
+window.updateActivity=(i,f,v)=>{ activities[i][f]=v; }
+window.deleteActivity=(i)=>{ if(confirm("Eliminar actividad?")){ activities.splice(i,1); renderActivityTable(); generateGantt(); } }
+
+// CALCULAR RUTA CRITICA (considerando dependencias)
+function calcularRutaCritica(){
+  // Crear grafo
+  let graph={};
+  activities.forEach(a=>{ graph[a.actividad]={dur:(new Date(a.fechaFin)-new Date(a.fechaInicio))/(1000*60*60*24)+1,deps:a.dependencias, total:0, prev:null}; });
+
+  // Función recursiva calcular total
+  function calcTotal(node){
+    if(graph[node].total>0) return graph[node].total;
+    if(graph[node].deps.length===0){ graph[node].total=graph[node].dur; return graph[node].total; }
+    let maxDep=0, prev=null;
+    graph[node].deps.forEach(d=>{
+      if(!graph[d]) return;
+      const t=calcTotal(d);
+      if(t>maxDep){ maxDep=t; prev=d; }
+    });
+    graph[node].total=maxDep+graph[node].dur;
+    graph[node].prev=prev;
+    return graph[node].total;
+  }
+
+  // Calcular total para todos
+  Object.keys(graph).forEach(n=>calcTotal(n));
+
+  // Encontrar ruta crítica (actividad con total más largo)
+  let endNode=Object.keys(graph).reduce((a,b)=>graph[a].total>graph[b].total?a:b);
+  let ruta=[];
+  while(endNode){ ruta.unshift(endNode); endNode=graph[endNode].prev; }
+  return ruta;
+}
+
+// GENERAR GANTT
+generateGanttBtn.addEventListener('click',generateGantt);
+function generateGantt(){
+  if(activities.length===0){alert("Agrega actividades"); return;}
+  ganttTable.innerHTML='';
+  const minDate=new Date(obraInicio);
+  const maxDate=new Date(obraFin);
+  let dates=[];
+  let current=new Date(minDate);
+  while(current<=maxDate){
+    dates.push(new Date(current));
+    switch(timeScale){
+      case 'día': current.setDate(current.getDate()+1); break;
+      case 'semana': current.setDate(current.getDate()+7); break;
+      case 'mes': current.setMonth(current.getMonth()+1); break;
+      case 'año': current.setFullYear(current.getFullYear()+1); break;
+    }
+  }
+
+  const rutaCritica=calcularRutaCritica();
+
+  // THEAD
+  const thead=document.createElement('thead');
+  const headRow=document.createElement('tr');
+  headRow.innerHTML='<th>Actividad</th>'+dates.map(d=>`<th>${d.toISOString().split('T')[0]}</th>`).join('');
+  thead.appendChild(headRow);
+  ganttTable.appendChild(thead);
+
+  // TBODY
+  const tbody=document.createElement('tbody');
+  activities.forEach(act=>{
+    const row=document.createElement('tr');
+    let cells=`<td>${act.actividad}</td>`;
+    dates.forEach(d=>{
+      const dateStr=d.toISOString().split('T')[0];
+      const isCritical=rutaCritica.includes(act.actividad);
+      cells+=dateStr>=act.fechaInicio && dateStr<=act.fechaFin?
+        `<td class="${isCritical?'critical-cell':'gantt-cell'}">X</td>`:'<td></td>';
+    });
+    row.innerHTML=cells;
+    tbody.appendChild(row);
+  });
+  ganttTable.appendChild(tbody);
+
+  // GRAFICO DURACION
+  const ctx=chartDuracion.getContext('2d');
+  new Chart(ctx,{type:'bar',data:{
+    labels:activities.map(a=>a.actividad),
+    datasets:[{label:'Duración (días)',data:activities.map(a=>(new Date(a.fechaFin)-new Date(a.fechaInicio))/(1000*60*60*24)+1),backgroundColor:activities.map(a=>rutaCritica.includes(a.actividad)?'rgba(229,57,53,0.7)':'rgba(76,175,80,0.7)')}]
+  },options:{responsive:true,plugins:{legend:{display:false}}}});
+}
+
+// EXPORTAR EXCEL
+exportBtn.addEventListener('click',()=>{
+  const wb=XLSX.utils.book_new();
+  const ws=XLSX.utils.table_to_sheet(ganttTable);
+  XLSX.utils.book_append_sheet(wb,ws,"Gantt");
+  XLSX.writeFile(wb,"gantt.xlsx");
+});
+</script>
+</body>
+</html>
